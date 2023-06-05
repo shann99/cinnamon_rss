@@ -6,16 +6,26 @@ from pprint import pprint as pp
 import discord
 import feedparser
 import pyfiglet
+import pymongo
 import requests
 from discord.ext import commands
 from dotenv import load_dotenv
 from lxml import html
+from pymongo import MongoClient
+
+from validate import check_link
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents)
 
 client = discord.Client(intents=intents)
+
+mongoClient = pymongo.MongoClient(MONGO_URI)
+
+db = mongoClient["DB_NAME"]
+
+collection = db["COLLECTION_NAME"]
 
 
 @bot.event
@@ -26,239 +36,120 @@ async def on_ready():
     )
 
 
-# usage: .subscribe https://rssfeed.link
-# will first check the link against w3 rss feed validator API to ensure its valid before subscribing
+# Usage:
+# subscribe to RSS Feed: .subscribe https://rssfeed.link
+# subscribe with keywords
+#   -> <keyword_search> == the section where you want your keyword to be looked for (aka title, summary, etc.)
+#   -> keywords should be comma separated such as: apples, bananas, strawberries
+#   -> usage: .subscribe https://rssfeed.link <keyword_search> <keyword> <keyword>
+#   -> example: .subscribe https://fruits.com/rss title apples, bananas, strawberries
+# feed gets validated with W3 validator (see validate.py)
+#  --> unicode errors for rss feeds do get ignored
+
+
 @bot.command(aliases=["Subscribe", "sub"])
-async def subscribe(ctx, arg):
-    base_url = "http://validator.w3.org/feed/check.cgi?url="
-    validator = requests.post(base_url + arg + "&output=soap12")
-    status = validator.status_code
-    resp_length = len(validator.content)
+async def subscribe(ctx, *args):
+    keywords = []
+    if len(args) == 0:
+        await ctx.send("Hey! You forgot to include a link")
+        exit()
+    elif len(args) == 2:
+        await ctx.send("Please review directions again")
+        exit()
+    elif len(args) >= 3:
+        for i in args[2:]:
+            keyword = i.strip(",")
+            keywords.append(keyword)
+    else:
+        pass
 
-    response = validator.text
-
-    # success
-    if status == 200:
-        root = ET.fromstring(response)
-        ns = {"env": "Envelope", "m": "http://www.w3.org/2005/10/feed-validator"}
-        error_nums = root.find(".//m:errorcount", ns)
-
-        if int(error_nums.text) > 0:  # type: ignore
-            await ctx.send(
-                "There seems to be an error regarding your RSS feed link.\nBelow are the error(s): "
-            )
-
-            a = root.iterfind(".//m:errorlist/error/type", ns)
-            b = root.iterfind(".//m:errorlist/error/text", ns)
-            for error_type, error_text in zip(a, b):
-                await ctx.send(f"**{error_type.text}** -> {error_text.text}")
-
+    message, error_message, error_message2 = check_link(args[0])
+    if message == "**Subscribed!**" and len(args) == 1:
+        user_query = {"user_id": ctx.message.author.id}
+        if collection.count_documents(user_query) == 0:
+            data = {
+                "user_id": ctx.message.author.id,
+                "rss_feeds": [
+                    {"link": args[0], "keyword_search": None, "keywords": None}
+                ],
+            }
+            collection.insert_one(data)
+            await ctx.send(message)
         else:
-            await ctx.send("**Subscribed!**")
-            feed = feedparser.parse(arg)
-            for entry in feed.entries:
-                if "title" in entry and "summary" in entry and "link" in entry:
-                    title = html.fromstring(entry.title).text_content()
-                    link = html.fromstring(entry.link).text_content()
-                    await ctx.send(f"**{title}**\n{link}")
+            user = collection.find(user_query)
+            for found_user in user:
+                update = {
+                    "$push": {
+                        "rss_feeds": {
+                            "link": args[0],
+                            "keyword_search": None,
+                            "keywords": None,
+                        }
+                    },
+                }
+                collection.update_one({"user_id": ctx.message.author.id}, update)
+                await ctx.send(message)
 
-    # error status
-    elif status == 301:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Moved Permanently**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
+    elif message == "**Subscribed!**" and len(args) >= 3:
+        user_query = {"user_id": ctx.message.author.id}
+        if collection.count_documents(user_query) == 0:
+            data = {
+                "user_id": ctx.message.author.id,
+                "rss_feeds": [
+                    {"link": args[0], "keyword_search": args[1], "keywords": keywords}
+                ],
+            }
+            collection.insert_one(data)
+            await ctx.send(message)
         else:
-            await ctx.send(f"**{status} Moved Permanently**")
-            await ctx.send("**Error Message**: \n> {}".format(validator.content))
-    elif status == 308:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Permanent Redirect**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Permanent Redirect**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
-    elif status == 401:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Unauthorized**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Unauthorized**")
-            await ctx.send("**Error Message**: \n> {}".format(validator.content))
-    elif status == 403:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Forbidden Error**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Forbidden**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
-
-    elif status == 404:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Not Found Error**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Not Found Error**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
-    elif status == 500:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Internal Server Error**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Internal Server Error**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
-
-    elif status == 502:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Bad Gateway Error**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Bad Gateway Error**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
-
-    elif status == 504:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Gateway Timeout Error**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Gateway Timeout Error**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
+            user = collection.find(user_query)
+            for found_user in user:
+                update = {
+                    "$push": {
+                        "rss_feeds": {
+                            "link": args[0],
+                            "keyword_search": args[1],
+                            "keywords": keywords,
+                        }
+                    },
+                }
+                collection.update_one({"user_id": ctx.message.author.id}, update)
+                await ctx.send(message)
 
     else:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} code**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} code**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
-
-    await ctx.send(arg)
+        await ctx.send(message)
+        if error_message != "no_error":
+            await ctx.send(error_message)
+        if error_message2 != "no_error":
+            await ctx.send(error_message2)
 
 
 @bot.command(aliases=["Validate", "verify", "check", "test"])
 async def validate(ctx, arg):
-    base_url = "http://validator.w3.org/feed/check.cgi?url="
-    validator = requests.post(base_url + arg + "&output=soap12")
-    resp_length = len(validator.content)
-    status = validator.status_code
-
-    if status == 200:
-        await ctx.send("**This is a valid RSS feed!**")
-    elif status == 301:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Moved Permanently**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Moved Permanently**")
-            await ctx.send("**Error Message**: \n> {}".format(validator.content))
-    elif status == 308:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Permanent Redirect**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Permanent Redirect**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
-    elif status == 401:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Unauthorized**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Unauthorized**")
-            await ctx.send("**Error Message**: \n> {}".format(validator.content))
-    elif status == 403:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Forbidden Error**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Forbidden**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
-
-    elif status == 404:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Not Found Error**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Not Found Error**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
-    elif status == 500:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Internal Server Error**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Internal Server Error**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
-
-    elif status == 502:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Bad Gateway Error**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Bad Gateway Error**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
-
-    elif status == 504:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} Gateway Timeout Error**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} Gateway Timeout Error**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
-
+    message, error_message, error_message2 = check_link(arg)
+    if len(arg) == 0:
+        await ctx.send("Hey! You forgot to include a link")
+        exit()
     else:
-        if resp_length > 2000:
-            await ctx.send(f"**{status} code**")
-            await ctx.send("**Error Message**:\n> {}".format(validator.content[:1900]))
-            await ctx.send("**Continued**:\n> {}".format(validator.content[1901:]))
-
-        else:
-            await ctx.send(f"**{status} code**")
-            await ctx.send("**Error Message:** \n> {}".format(validator.content))
+        await ctx.send(message)
+        if error_message != "no_error":
+            await ctx.send(error_message)
+        if error_message2 != "no_error":
+            await ctx.send(error_message2)
 
 
-@bot.command(aliases=["Unsub", "Unsubscribe", "unsub", "remove"])
-async def unsubscribe(ctx, arg):
-    await ctx.send(f"You've been unsubscribed from {arg}")
+# remove feed from db -> need to work on
+# @bot.command(aliases=["Unsub", "Unsubscribe", "unsub", "remove"])
+# async def unsubscribe(ctx, arg):
+#     await ctx.send(f"You've been unsubscribed from {arg}")
+
+
+# just used for testing to clear out messages
+@bot.command()
+@commands.has_permissions(manage_messages=True)
+async def clear(ctx, amount=5):
+    await ctx.channel.purge(limit=amount + 1)
 
 
 load_dotenv()
 bot.run(os.getenv("TOKEN"))
-# **Cinnamon RSS Actions**:
-# - Type '$help' for help
-# - Type '$validate <link>' for cinnamon rss to check if the RSS link you've provided is valid (this is done using an API request to https://validator.w3.org/)
-# - Type '$subscribe <link>' in which cinnamon rss will first automatically check the RSS feed link to see if it's valid and if it is, it will subscribe and alert you to any new updates
-# - ? Type '$subscribe <link> <keywords:keyword>' to subscribe to an RSS feed and only get updated if the feed is updated with your keywords. The keywords need to be comma separated.
-#     Ex. $subscribe https://rssfeed.link keywords:food, drink, movie
-#     or $subscribe https://rssfeed.link keywords:food
