@@ -1,2 +1,5 @@
 .env
-feed_updates.py
+__pycache__/validate.cpython-310.pyc
+fly.toml
+.vscode/settings.json
+.DS_Store
