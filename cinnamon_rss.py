@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import json
 import os
@@ -45,8 +46,8 @@ async def on_ready():
 
 # tester command to test how message look
 @bot.command()
-async def tester(ctx):
-    feed = feedparser.parse(os.getenv("TEST_LINK"))
+async def tester(ctx, arg):
+    feed = feedparser.parse(arg)
     x = 5
     user_id = os.getenv("DISCORD_ID")
     for entry in feed.entries[:x]:
@@ -61,6 +62,15 @@ async def tester(ctx):
             embed.set_footer(text=datetime.datetime.now())
             user = await bot.fetch_user(user_id)
             await user.send(embed=embed)
+        if "category" in entry:
+            categories = entry.category
+            user = await bot.fetch_user(user_id)
+            if "TERM" in categories:
+                await user.send(f"{categories}")
+                title = html.fromstring(entry.title).text_content()
+                link = html.fromstring(entry.link).text_content()
+                user = await bot.fetch_user(user_id)
+                await user.send(f"**{title}**\n{link}")
         else:
             title = html.fromstring(entry.title).text_content()
             link = html.fromstring(entry.link).text_content()
@@ -285,7 +295,8 @@ async def validate(ctx, arg):
         await ctx.send("Hey! You forgot to include a link")
         exit()
     else:
-        await ctx.send(message)
+        if message == "**Subscribed!**":
+            await ctx.send("The link is valid!")
         if error_message != "no_error":
             await ctx.send(error_message)
         if error_message2 != "no_error":
@@ -309,8 +320,8 @@ async def unsubscribe(ctx, arg):
 # only works in channels
 @bot.command()
 @commands.has_permissions(manage_messages=True)
-async def clear(ctx, arg):
-    await ctx.channel.id.purge(limit=arg + 1)
+async def clear(ctx, amount=5):
+    await ctx.channel.purge(limit=amount + 1)
 
 
 async def feedChecker():
@@ -420,6 +431,60 @@ async def feedChecker():
                                     },
                                     update,
                                 )
+                    if data["keyword_search"] == "category":
+                        if "category" in entry:
+                            categories = entry.category
+                            for keyword in data["keywords"]:
+                                if keyword in categories:
+                                    title = html.fromstring(entry.title).text_content()
+                                    link = html.fromstring(entry.link).text_content()
+                                    channel = await bot.fetch_channel(channel_id)
+                                    await channel.send(f"**{title}**\n{link}")
+                                    update = {
+                                        "$set": {
+                                            "rss_feeds.$.last_link": feed.entries[
+                                                0
+                                            ].link
+                                        }
+                                    }
+                                    collection.update_one(
+                                        {
+                                            "user_id": user_id,
+                                            "rss_feeds.feed_url": data["feed_url"],
+                                        },
+                                        update,
+                                    )
+
+
+# when the "bookmark" reaction is added to a message,
+# the message is copied over to the bookmark channel
+# and the bookmark emoji gets removed after 10 seconds
+# when the message is in the bookmark channel, add a "saved" reaction
+# when the saved reaction is clicked on again, this indicates that you want to remove
+# the bookmark so the message gets deleted
+@bot.event
+async def on_raw_reaction_add(payload):
+    # react_msgs = []
+    if payload.emoji.name == "bookmark_pink":
+        channel = await bot.fetch_channel(payload.channel_id)
+        message = await channel.fetch_message(payload.message_id)
+        bookmark_channel = await bot.fetch_channel(os.getenv("BOOKMARK_CHANNEL"))
+        msg = message.content
+        reaction = discord.utils.get(message.reactions, emoji=payload.emoji)
+
+        bookmark_message = await bookmark_channel.send(msg)
+        await bookmark_message.add_reaction("<:saved:1120203780823203940>")
+        await asyncio.sleep(10)
+
+        await reaction.remove(payload.member)
+
+    if payload.emoji.name == "saved":
+        channel = await bot.fetch_channel(payload.channel_id)
+        message = await channel.fetch_message(payload.message_id)
+        reaction = discord.utils.get(message.reactions, emoji=payload.emoji)
+
+        if reaction.count >= 2:
+            await message.delete()
 
 
 load_dotenv()
