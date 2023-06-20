@@ -44,7 +44,7 @@ async def on_ready():
     )
 
 
-# tester command to test how message look
+# command used for testing and troubleshooting
 @bot.command()
 async def tester(ctx, arg):
     feed = feedparser.parse(arg)
@@ -96,9 +96,11 @@ async def subscribe(ctx, *args):
 
     message, error_message, error_message2 = check_link(args[0])  # type:ignore
     if message == "**Subscribed!**" and len(args) == 1:
+        # queries mongodb to check if the user already exists
         user_query = {"user_id": ctx.message.author.id}
         feed = feedparser.parse(args[0])
         link = feed.entries[0].link
+        # if the user does not exist, create new document in mongodb
         if collection.count_documents(user_query) == 0:
             data = {
                 "user_id": ctx.message.author.id,
@@ -114,11 +116,12 @@ async def subscribe(ctx, *args):
             }
             collection.insert_one(data)
             await ctx.send(message)
-
+        # if the user does exist, find the user and update their rss feed section to include the new feed they've subscribed to
         else:
             user = collection.find(user_query)
             url = args[0]
             for found_user in user:
+                # checks if feed url already exists so you can't subscribe twice
                 url_match = collection.find_one({"rss_feeds.feed_url": url})
                 if url_match == None:
                     update = {
@@ -137,7 +140,8 @@ async def subscribe(ctx, *args):
                     await ctx.send(message)
                 else:
                     await ctx.send("You're already subscribed to this feed.")
-
+    # if they are subscribing with keywords and a keyword search parameter, do the same thing
+    # as above but taking into account the extra information
     elif message == "**Subscribed!**" and len(args) >= 3:
         user_query = {"user_id": ctx.message.author.id}
         feed = feedparser.parse(args[0])
@@ -175,7 +179,6 @@ async def subscribe(ctx, *args):
                         },
                     }
                     collection.update_one({"user_id": ctx.message.author.id}, update)
-
                     await ctx.send(message)
                 else:
                     await ctx.send("You're already subscribed to this feed.")
@@ -187,7 +190,9 @@ async def subscribe(ctx, *args):
             await ctx.send(error_message2)
 
 
-# "force" subscription to RSS feed to bypass any errors
+# "force" a subscription to an RSS feed to bypass any errors
+# aka does not run validate function to check if the rss feed is valid before subscribing
+# if you know an rss feed is valid but still returns errors use this command
 @bot.command(aliases=["Force"])
 async def force(ctx, *args):
     keywords = []
@@ -316,22 +321,21 @@ async def unsubscribe(ctx, arg):
     await ctx.send(f"You've been unsubscribed from {arg}")
 
 
-# just used for testing to clear out messages
-# only works in channels
+# primarily used to delete messages when testing/troubleshooting
 @bot.command()
 @commands.has_permissions(manage_messages=True)
 async def clear(ctx, amount=5):
     await ctx.channel.purge(limit=amount + 1)
 
 
+# queries mongodb to retrieve rss feed information
+# sends discord message if there is a new item in feed
 async def feedChecker():
     await bot.wait_until_ready()
-    print(collection.estimated_document_count())
     if collection.estimated_document_count() >= 1:
         result = list(collection.find({}).limit(1))
         new_result = loads(dumps(result))
         user_id = int(new_result[0]["user_id"])
-        channel_id = 0
         arr = []
         for item in new_result[0]["rss_feeds"]:
             data = {
@@ -339,8 +343,8 @@ async def feedChecker():
                 "keyword_search": item["keyword_search"],
                 "keywords": item["keywords"],
                 "last_link": item["last_link"],
+                "channel_id": int(item["channel_id"]),
             }
-            channel_id = int(item["channel_id"])
             arr.append(data)
         for data in arr:
             feed = feedparser.parse(data["feed_url"])
@@ -353,6 +357,7 @@ async def feedChecker():
                         break
                     else:
                         x += 1
+            # creates a discord embedded image if there is media linked
             for entry in feed.entries[:x]:
                 if data["keyword_search"] == None:
                     if "media_thumbnail" in entry:
@@ -366,7 +371,7 @@ async def feedChecker():
                         )
                         embed.set_image(url=media)
                         embed.set_footer(text=datetime.datetime.now())
-                        channel = await bot.fetch_channel(channel_id)
+                        channel = await bot.fetch_channel(int(data["channel_id"]))
                         await channel.send(embed=embed)
                         update = {
                             "$set": {"rss_feeds.$.last_link": feed.entries[0].link}
@@ -385,7 +390,7 @@ async def feedChecker():
                     ):
                         title = html.fromstring(entry.title).text_content()
                         link = html.fromstring(entry.link).text_content()
-                        channel = await bot.fetch_channel(channel_id)
+                        channel = await bot.fetch_channel(int(data["channel_id"]))
                         await channel.send(f"**{title}**\n{link}")
                         update = {
                             "$set": {"rss_feeds.$.last_link": feed.entries[0].link}
@@ -399,7 +404,7 @@ async def feedChecker():
                         )
                     else:
                         link = html.fromstring(entry.link).text_content()
-                        channel = await bot.fetch_channel(channel_id)
+                        channel = await bot.fetch_channel(int(data["channel_id"]))
                         await channel.send(link)
                         update = {
                             "$set": {"rss_feeds.$.last_link": feed.entries[0].link}
@@ -417,7 +422,9 @@ async def feedChecker():
                             if keyword in entry.title:
                                 title = html.fromstring(entry.title).text_content()
                                 link = html.fromstring(entry.link).text_content()
-                                channel = await bot.fetch_channel(channel_id)
+                                channel = await bot.fetch_channel(
+                                    int(data["channel_id"])
+                                )
                                 await channel.send(link)
                                 update = {
                                     "$set": {
@@ -438,7 +445,9 @@ async def feedChecker():
                                 if keyword in categories:
                                     title = html.fromstring(entry.title).text_content()
                                     link = html.fromstring(entry.link).text_content()
-                                    channel = await bot.fetch_channel(channel_id)
+                                    channel = await bot.fetch_channel(
+                                        int(data["channel_id"])
+                                    )
                                     await channel.send(f"**{title}**\n{link}")
                                     update = {
                                         "$set": {
@@ -456,12 +465,11 @@ async def feedChecker():
                                     )
 
 
-# when the "bookmark" reaction is added to a message,
-# the message is copied over to the bookmark channel
-# and the bookmark emoji gets removed after 10 seconds
-# when the message is in the bookmark channel, add a "saved" reaction
-# when the saved reaction is clicked on again, this indicates that you want to remove
-# the bookmark so the message gets deleted
+# when the "bookmark" reaction is added to a message:
+# the message is copied over to the bookmark channel and the bookmark reaction gets removed after 10 seconds
+# when the message is in the bookmark channel, a "saved" reaction is added
+# when the saved reaction is clicked on again, this indicates that you want to removethe bookmark so the
+# message in the bookmark channel gets deleted
 @bot.event
 async def on_raw_reaction_add(payload):
     # react_msgs = []
