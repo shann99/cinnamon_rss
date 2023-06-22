@@ -62,15 +62,15 @@ async def tester(ctx, arg):
             embed.set_footer(text=datetime.datetime.now())
             user = await bot.fetch_user(user_id)
             await user.send(embed=embed)
-        if "category" in entry:
-            categories = entry.category
-            user = await bot.fetch_user(user_id)
-            if "TERM" in categories:
-                await user.send(f"{categories}")
-                title = html.fromstring(entry.title).text_content()
-                link = html.fromstring(entry.link).text_content()
-                user = await bot.fetch_user(user_id)
-                await user.send(f"**{title}**\n{link}")
+        # if "category" in entry:
+        #     categories = entry.category
+        #     user = await bot.fetch_user(user_id)
+        #     if "TERM" in categories:
+        #         await user.send(f"{categories}")
+        #         title = html.fromstring(entry.title).text_content()
+        #         link = html.fromstring(entry.link).text_content()
+        #         user = await bot.fetch_user(user_id)
+        #         await user.send(f"**{title}**\n{link}")
         else:
             title = html.fromstring(entry.title).text_content()
             link = html.fromstring(entry.link).text_content()
@@ -309,6 +309,7 @@ async def validate(ctx, arg):
 
 
 # use: unsubscribe <link>
+# deletes item from mongodb
 @bot.command(aliases=["Unsub", "Unsubscribe", "unsub", "remove"])
 async def unsubscribe(ctx, arg):
     user_query = {"user_id": ctx.message.author.id}
@@ -321,7 +322,7 @@ async def unsubscribe(ctx, arg):
     await ctx.send(f"You've been unsubscribed from {arg}")
 
 
-# primarily used to delete messages when testing/troubleshooting
+# used to delete messages when testing/troubleshooting
 @bot.command()
 @commands.has_permissions(manage_messages=True)
 async def clear(ctx, amount=5):
@@ -472,26 +473,49 @@ async def feedChecker():
 # message in the bookmark channel gets deleted
 @bot.event
 async def on_raw_reaction_add(payload):
-    # react_msgs = []
     if payload.emoji.name == "bookmark_pink":
         channel = await bot.fetch_channel(payload.channel_id)
         message = await channel.fetch_message(payload.message_id)
-        bookmark_channel = await bot.fetch_channel(os.getenv("BOOKMARK_CHANNEL"))
-        msg = message.content
-        reaction = discord.utils.get(message.reactions, emoji=payload.emoji)
+        embeds = message.embeds
+        embed_title = ""
+        desc = ""
+        image = ""
+        footer_text = ""
+        for embed in embeds:
+            embed_title = embed.title
+            desc = embed.description
+            image = embed.image.url
+            footer_text = embed.footer.text
+        # if message is an embedded message (aka if it contains an image)
+        # create a "new" embedded message and send to as a bookmark
+        if footer_text != None and image != None:
+            print("embed")
+            embed = discord.Embed(
+                title=embed_title, description=desc, color=discord.Color.random()
+            )
+            embed.set_image(url=image)
+            embed.set_footer(text=footer_text)
+            bookmark_channel = await bot.fetch_channel(os.getenv("BOOKMARK_CHANNEL"))
+            reaction = discord.utils.get(message.reactions, emoji=payload.emoji)
+            bookmark_message = await bookmark_channel.send(embed=embed)
+            await bookmark_message.add_reaction("<:saved:1120203780823203940>")
+            await asyncio.sleep(10)
+            await reaction.remove(payload.member)
+        else:
+            bookmark_channel = await bot.fetch_channel(os.getenv("BOOKMARK_CHANNEL"))
+            msg = message.content
+            reaction = discord.utils.get(message.reactions, emoji=payload.emoji)
 
-        bookmark_message = await bookmark_channel.send(msg)
-        await bookmark_message.add_reaction("<:saved:1120203780823203940>")
-        await asyncio.sleep(10)
+            bookmark_message = await bookmark_channel.send(msg)
+            await bookmark_message.add_reaction("<:saved:1120203780823203940>")
+            await asyncio.sleep(10)
 
-        await reaction.remove(payload.member)
-
+            await reaction.remove(payload.member)
     if payload.emoji.name == "saved":
         channel = await bot.fetch_channel(payload.channel_id)
         message = await channel.fetch_message(payload.message_id)
         reaction = discord.utils.get(message.reactions, emoji=payload.emoji)
-
-        if reaction.count >= 2:
+        if reaction.count == 2:
             await message.delete()
 
 
