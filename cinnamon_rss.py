@@ -36,7 +36,7 @@ collection = db["user_data"]
 @bot.event
 async def on_ready():
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(feedChecker, "interval", minutes=3)
+    scheduler.add_job(feedRunner, "interval", minutes=3)
     scheduler.start()
     print(pyfiglet.figlet_format("Cinnamon RSS", justify="center"))
     print(
@@ -329,7 +329,7 @@ async def clear(ctx, amount=5):
     await ctx.channel.purge(limit=amount + 1)
 
 
-async def feedRunner(data):
+async def feedChecker(data):
     user_id = data["user_id"]
     feed = feedparser.parse(data["feed_url"])
     x = 0
@@ -434,7 +434,7 @@ async def feedRunner(data):
 
 # queries mongodb to retrieve rss feed information
 # sends discord message if there is a new item in feed
-async def feedChecker():
+async def feedRunner():
     await bot.wait_until_ready()
     if collection.estimated_document_count() >= 1:
         result = list(collection.find({}).limit(1))
@@ -451,7 +451,7 @@ async def feedChecker():
                 "user_id": user_id,
             }
             arr.append(data)
-        coroutines = [feedRunner(data) for data in arr]
+        coroutines = [feedChecker(data) for data in arr]
         await asyncio.gather(*coroutines)
 
 
@@ -509,4 +509,5 @@ async def on_raw_reaction_add(payload):
 
 
 load_dotenv()
-bot.run(os.getenv("DISCORD_TOKEN"))
+
+asyncio.run(bot.run(os.getenv("DISCORD_TOKEN")))
