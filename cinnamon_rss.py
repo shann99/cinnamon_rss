@@ -36,7 +36,7 @@ collection = db["user_data"]
 @bot.event
 async def on_ready():
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(feedChecker, "interval", minutes=5)
+    scheduler.add_job(feedChecker, "interval", minutes=3)
     scheduler.start()
     print(pyfiglet.figlet_format("Cinnamon RSS", justify="center"))
     print(
@@ -59,7 +59,7 @@ async def tester(ctx, arg):
                 title=entry_title, description=link, color=discord.Color.random()
             )
             embed.set_image(url=media)
-            embed.set_footer(text=datetime.datetime.now())
+            embed.set_footer(text=entry.published)
             user = await bot.fetch_user(user_id)
             await user.send(embed=embed)
         # if "category" in entry:
@@ -329,6 +329,109 @@ async def clear(ctx, amount=5):
     await ctx.channel.purge(limit=amount + 1)
 
 
+async def feedRunner(data):
+    user_id = data["user_id"]
+    feed = feedparser.parse(data["feed_url"])
+    x = 0
+    if feed.entries[0].link == data["last_link"]:
+        x = 0
+    else:
+        for item in feed.entries:
+            if item.link != data["last_link"]:
+                x += 1
+            else:
+                break
+    for entry in feed.entries[:x]:
+        if data["keyword_search"] == None:
+            # creates a discord embedded image if there is media linked
+            if "media_thumbnail" in entry:
+                entry_title = html.fromstring(entry.title).text_content()
+                link = html.fromstring(entry.link).text_content()
+                media = entry.media_thumbnail[0]["url"]
+                embed = discord.Embed(
+                    title=entry_title,
+                    description=link,
+                    color=discord.Color.random(),
+                )
+                embed.set_image(url=media)
+                embed.set_footer(text=entry.published)
+                channel = await bot.fetch_channel(int(data["channel_id"]))
+                await channel.send(embed=embed)
+                update = {"$set": {"rss_feeds.$.last_link": feed.entries[0].link}}
+                collection.update_one(
+                    {
+                        "user_id": user_id,
+                        "rss_feeds.feed_url": data["feed_url"],
+                    },
+                    update,
+                )
+            elif (
+                "title" in entry and "link" in entry and "media_thumbnail" not in entry
+            ):
+                title = html.fromstring(entry.title).text_content()
+                link = html.fromstring(entry.link).text_content()
+                channel = await bot.fetch_channel(int(data["channel_id"]))
+                await channel.send(f"**{title}**\n{link}")
+                update = {"$set": {"rss_feeds.$.last_link": feed.entries[0].link}}
+                collection.update_one(
+                    {
+                        "user_id": user_id,
+                        "rss_feeds.feed_url": data["feed_url"],
+                    },
+                    update,
+                )
+            else:
+                link = html.fromstring(entry.link).text_content()
+                channel = await bot.fetch_channel(int(data["channel_id"]))
+                await channel.send(link)
+                update = {"$set": {"rss_feeds.$.last_link": feed.entries[0].link}}
+                collection.update_one(
+                    {
+                        "user_id": user_id,
+                        "rss_feeds.feed_url": data["feed_url"],
+                    },
+                    update,
+                )
+        else:
+            if data["keyword_search"] == "title":
+                for keyword in data["keywords"]:
+                    if keyword in entry.title:
+                        title = html.fromstring(entry.title).text_content()
+                        link = html.fromstring(entry.link).text_content()
+                        channel = await bot.fetch_channel(int(data["channel_id"]))
+                        await channel.send(link)
+                        update = {
+                            "$set": {"rss_feeds.$.last_link": feed.entries[0].link}
+                        }
+                        collection.update_one(
+                            {
+                                "user_id": user_id,
+                                "rss_feeds.feed_url": data["feed_url"],
+                            },
+                            update,
+                        )
+            if data["keyword_search"] == "category":
+                if "category" in entry:
+                    categories = entry.category
+                    for keyword in data["keywords"]:
+                        if keyword in categories:
+                            title = html.fromstring(entry.title).text_content()
+                            link = html.fromstring(entry.link).text_content()
+                            channel = await bot.fetch_channel(int(data["channel_id"]))
+                            await channel.send(f"**{title}**\n{link}")
+                            update = {
+                                "$set": {"rss_feeds.$.last_link": feed.entries[0].link}
+                            }
+                            collection.update_one(
+                                {
+                                    "user_id": user_id,
+                                    "rss_feeds.feed_url": data["feed_url"],
+                                },
+                                update,
+                            )
+    await asyncio.sleep(1)
+
+
 # queries mongodb to retrieve rss feed information
 # sends discord message if there is a new item in feed
 async def feedChecker():
@@ -345,125 +448,11 @@ async def feedChecker():
                 "keywords": item["keywords"],
                 "last_link": item["last_link"],
                 "channel_id": int(item["channel_id"]),
+                "user_id": user_id,
             }
             arr.append(data)
-        for data in arr:
-            feed = feedparser.parse(data["feed_url"])
-            x = 0
-            if feed.entries[0].link == data["last_link"]:
-                x = 0
-            else:
-                for item in feed.entries:
-                    if item.link == data["last_link"]:
-                        break
-                    else:
-                        x += 1
-            # creates a discord embedded image if there is media linked
-            for entry in feed.entries[:x]:
-                if data["keyword_search"] == None:
-                    if "media_thumbnail" in entry:
-                        entry_title = html.fromstring(entry.title).text_content()
-                        link = html.fromstring(entry.link).text_content()
-                        media = entry.media_thumbnail[0]["url"]
-                        embed = discord.Embed(
-                            title=entry_title,
-                            description=link,
-                            color=discord.Color.random(),
-                        )
-                        embed.set_image(url=media)
-                        embed.set_footer(text=datetime.datetime.now())
-                        channel = await bot.fetch_channel(int(data["channel_id"]))
-                        await channel.send(embed=embed)
-                        update = {
-                            "$set": {"rss_feeds.$.last_link": feed.entries[0].link}
-                        }
-                        collection.update_one(
-                            {
-                                "user_id": user_id,
-                                "rss_feeds.feed_url": data["feed_url"],
-                            },
-                            update,
-                        )
-                    elif (
-                        "title" in entry
-                        and "link" in entry
-                        and "media_thumbnail" not in entry
-                    ):
-                        title = html.fromstring(entry.title).text_content()
-                        link = html.fromstring(entry.link).text_content()
-                        channel = await bot.fetch_channel(int(data["channel_id"]))
-                        await channel.send(f"**{title}**\n{link}")
-                        update = {
-                            "$set": {"rss_feeds.$.last_link": feed.entries[0].link}
-                        }
-                        collection.update_one(
-                            {
-                                "user_id": user_id,
-                                "rss_feeds.feed_url": data["feed_url"],
-                            },
-                            update,
-                        )
-                    else:
-                        link = html.fromstring(entry.link).text_content()
-                        channel = await bot.fetch_channel(int(data["channel_id"]))
-                        await channel.send(link)
-                        update = {
-                            "$set": {"rss_feeds.$.last_link": feed.entries[0].link}
-                        }
-                        collection.update_one(
-                            {
-                                "user_id": user_id,
-                                "rss_feeds.feed_url": data["feed_url"],
-                            },
-                            update,
-                        )
-                else:
-                    if data["keyword_search"] == "title":
-                        for keyword in data["keywords"]:
-                            if keyword in entry.title:
-                                title = html.fromstring(entry.title).text_content()
-                                link = html.fromstring(entry.link).text_content()
-                                channel = await bot.fetch_channel(
-                                    int(data["channel_id"])
-                                )
-                                await channel.send(link)
-                                update = {
-                                    "$set": {
-                                        "rss_feeds.$.last_link": feed.entries[0].link
-                                    }
-                                }
-                                collection.update_one(
-                                    {
-                                        "user_id": user_id,
-                                        "rss_feeds.feed_url": data["feed_url"],
-                                    },
-                                    update,
-                                )
-                    if data["keyword_search"] == "category":
-                        if "category" in entry:
-                            categories = entry.category
-                            for keyword in data["keywords"]:
-                                if keyword in categories:
-                                    title = html.fromstring(entry.title).text_content()
-                                    link = html.fromstring(entry.link).text_content()
-                                    channel = await bot.fetch_channel(
-                                        int(data["channel_id"])
-                                    )
-                                    await channel.send(f"**{title}**\n{link}")
-                                    update = {
-                                        "$set": {
-                                            "rss_feeds.$.last_link": feed.entries[
-                                                0
-                                            ].link
-                                        }
-                                    }
-                                    collection.update_one(
-                                        {
-                                            "user_id": user_id,
-                                            "rss_feeds.feed_url": data["feed_url"],
-                                        },
-                                        update,
-                                    )
+        coroutines = [feedRunner(data) for data in arr]
+        await asyncio.gather(*coroutines)
 
 
 # when the "bookmark" reaction is added to a message:
