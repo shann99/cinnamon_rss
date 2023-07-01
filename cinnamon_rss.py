@@ -23,6 +23,8 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents)
 
+load_dotenv()
+
 client = discord.Client(intents=intents)
 
 mongoClient = pymongo.MongoClient(os.getenv("MONGODB_URI"))
@@ -36,7 +38,7 @@ collection = db["user_data"]
 @bot.event
 async def on_ready():
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(feedRunner, "interval", minutes=3)
+    scheduler.add_job(feedRunner, "interval", minutes=1)
     scheduler.start()
     print(pyfiglet.figlet_format("Cinnamon RSS", justify="center"))
     print(
@@ -415,20 +417,44 @@ async def feedChecker(data):
                     categories = entry.category
                     for keyword in data["keywords"]:
                         if keyword in categories:
-                            title = html.fromstring(entry.title).text_content()
-                            link = html.fromstring(entry.link).text_content()
-                            channel = await bot.fetch_channel(int(data["channel_id"]))
-                            await channel.send(f"**{title}**\n{link}")
-                            update = {
-                                "$set": {"rss_feeds.$.last_link": feed.entries[0].link}
-                            }
-                            collection.update_one(
-                                {
-                                    "user_id": user_id,
-                                    "rss_feeds.feed_url": data["feed_url"],
-                                },
-                                update,
-                            )
+                            if "title" in entry:
+                                title = html.fromstring(entry.title).text_content()
+                                link = html.fromstring(entry.link).text_content()
+                                channel = await bot.fetch_channel(
+                                    int(data["channel_id"])
+                                )
+                                await channel.send(f"**{title}**\n{link}")
+                                update = {
+                                    "$set": {
+                                        "rss_feeds.$.last_link": feed.entries[0].link
+                                    }
+                                }
+                                collection.update_one(
+                                    {
+                                        "user_id": user_id,
+                                        "rss_feeds.feed_url": data["feed_url"],
+                                    },
+                                    update,
+                                )
+                            else:
+                                link = html.fromstring(entry.link).text_content()
+                                channel = await bot.fetch_channel(
+                                    int(data["channel_id"])
+                                )
+                                await channel.send(f"{link}")
+                                update = {
+                                    "$set": {
+                                        "rss_feeds.$.last_link": feed.entries[0].link
+                                    }
+                                }
+                                collection.update_one(
+                                    {
+                                        "user_id": user_id,
+                                        "rss_feeds.feed_url": data["feed_url"],
+                                    },
+                                    update,
+                                )
+
     await asyncio.sleep(1)
 
 
@@ -478,7 +504,6 @@ async def on_raw_reaction_add(payload):
         # if message is an embedded message (aka if it contains an image)
         # create a "new" embedded message and send to as a bookmark
         if footer_text != None and image != None:
-            print("embed")
             embed = discord.Embed(
                 title=embed_title, description=desc, color=discord.Color.random()
             )
@@ -507,7 +532,5 @@ async def on_raw_reaction_add(payload):
         if reaction.count == 2:
             await message.delete()
 
-
-load_dotenv()
 
 asyncio.run(bot.run(os.getenv("DISCORD_TOKEN")))
