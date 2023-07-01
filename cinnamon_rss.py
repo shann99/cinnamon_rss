@@ -38,7 +38,7 @@ collection = db["user_data"]
 @bot.event
 async def on_ready():
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(feedRunner, "interval", minutes=1)
+    scheduler.add_job(feedRunner, "interval", minutes=3)
     scheduler.start()
     print(pyfiglet.figlet_format("Cinnamon RSS", justify="center"))
     print(
