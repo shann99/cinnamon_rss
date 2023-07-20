@@ -22,7 +22,7 @@ def check_link(argument):
             for item in a:
                 if item.text == "UnicodeError":
                     message = "**Subscribed!**"
-                    error_message = None
+                    error_message = "no_error"
                     error_message2 = "no_error"
                     return message, error_message, error_message2
                 else:
